@@ -111,7 +111,7 @@ class BachSampler(BaseSampler):
   def _run(self, pianorolls, masks):
     if not np.all(masks):
       raise NotImplementedError()
-    print("Loading validation pieces from %s..." % self.wmodel.hparams.dataset)
+    print("Loading validation pieces from %s..." % self.wmodel.hparams.ds)
     dataset = lib_data.get_dataset(self.data_dir, self.wmodel.hparams, "valid")
     bach_pianorolls = dataset.get_pianorolls()
     shape = pianorolls.shape

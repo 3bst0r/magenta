@@ -60,7 +60,7 @@ class Dataset(lib_util.Factory):
 
   @property
   def name(self):
-    return self.hparams.dataset
+    return self.hparams.ds
 
   @property
   def num_examples(self):
@@ -133,7 +133,7 @@ class Dataset(lib_util.Factory):
 
 def get_dataset(basepath, hparams, fold):
   """Factory for Datasets."""
-  return Dataset.make(hparams.dataset, basepath, hparams, fold)
+  return Dataset.make(hparams.ds, basepath, hparams, fold)
 
 
 class Jsb16thSeparated(Dataset):

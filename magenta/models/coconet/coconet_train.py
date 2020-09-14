@@ -235,7 +235,7 @@ def main(unused_argv):
   hparams = _hparams_from_flags()
 
   # Get data.
-  print('dataset:', FLAGS.dataset, FLAGS.data_dir)
+  print('dataset:', FLAGS.ds, FLAGS.data_dir)
   print('current dir:', os.path.curdir)
   train_data = lib_data.get_dataset(FLAGS.data_dir, hparams, 'train')
   valid_data = lib_data.get_dataset(FLAGS.data_dir, hparams, 'valid')

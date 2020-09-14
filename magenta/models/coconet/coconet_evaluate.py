@@ -133,7 +133,7 @@ def get_fold_pianorolls(fold, hparams):
   dataset = lib_data.get_dataset(FLAGS.data_dir, hparams, fold)
   pianorolls = dataset.get_pianorolls()
   tf.logging.info('Retrieving pianorolls from %s set of %s dataset.',
-                  fold, hparams.dataset)
+                  fold, hparams.ds)
   print_statistics(pianorolls)
   if FLAGS.fold_index is not None:
     pianorolls = [pianorolls[int(FLAGS.fold_index)]]
