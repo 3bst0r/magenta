@@ -1,15 +1,16 @@
 # %%
 import sys
-
+import os
+import argparse
 import tensorflow as tf
-from .my_rnn_model import BASIC_EVENT_DIM
-from .my_rnn_model import get_simple_rnn_model
+from tensorflow import keras
+from magenta.models.my_rnn.my_simple_rnn_model import BASIC_EVENT_DIM
+from magenta.models.my_rnn.my_simple_rnn_model import get_simple_rnn_model
 
 print("executing eagerly:")
 print(tf.executing_eagerly())
 
 BATCH_SIZE = 128
-
 
 def get_parse_function_shift(event_dim, label_shape=None):
     sequence_features = {
@@ -27,22 +28,46 @@ def get_parse_function_shift(event_dim, label_shape=None):
     return shift_melody
 
 
-sequence_example_file_paths = [
-    '/home/johannes/Documents/uni/msc/data/sequenceexamples/lmd_matched_A_basic/training_melodies.tfrecord']
+def is_valid_file(parser, arg):
+    if not os.path.exists(arg):
+        parser.error("The file %s does not exist!" % arg)
+    else:
+        return arg
 
-# read data
-ds = tf.data.TFRecordDataset(sequence_example_file_paths)
 
-ds = ds.map(get_parse_function_shift(BASIC_EVENT_DIM))
+class CustomSaver(keras.callbacks.Callback):
+    def on_epoch_end(self, epoch, logs={}):
+        if (epoch % 2) == 0:
+            self.model.save("/tmp/model_{}.tf".format(epoch), save_format='tf')
 
-ds = ds.padded_batch(batch_size=BATCH_SIZE, padded_shapes=([None, BASIC_EVENT_DIM], [None, BASIC_EVENT_DIM]))
-# shape is now [2             : input and label sequences
-#               128           : batch size
-#               ?             : padded sequence length per batch
-#               38]           : event dimensionality
 
-model = get_simple_rnn_model(BASIC_EVENT_DIM, is_Training=True)
-model.compile(loss='categorical_crossentropy', optimizer='adam', metrics=['accuracy'])
-model.summary()
-history = model.fit(ds, epochs=50)
-model.save('/tmp/simple_rnn_matched_A.model')
+def main(sequence_example_file_path):
+    # read data
+    ds = tf.data.TFRecordDataset([sequence_example_file_path])
+
+    ds = ds.map(get_parse_function_shift(BASIC_EVENT_DIM))
+
+    #ds = ds.take(10000)
+
+    ds = ds.padded_batch(batch_size=BATCH_SIZE, padded_shapes=([None, BASIC_EVENT_DIM], [None, BASIC_EVENT_DIM]))
+    # shape is now [2             : input and label sequences
+    #               128           : batch size
+    #               ?             : padded sequence length per batch
+    #               38]           : event dimensionality
+
+    saver = CustomSaver()
+
+    model = get_simple_rnn_model(BASIC_EVENT_DIM, is_Training=True)
+    model.compile(loss='categorical_crossentropy', optimizer='adam', metrics=['accuracy'])
+    model.summary()
+    model.fit(ds, epochs=50, callbacks=saver)
+    model.save('/tmp/model_final.tf', save_format='tf')
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description="Train RNN Model")
+    parser.add_argument('--sequence_example_file', dest="filename", required=True,
+                        help="File containing sequence examples for training or evaluation",
+                        type=lambda x: is_valid_file(parser, x))
+    args = parser.parse_args()
+    main(args.filename)
