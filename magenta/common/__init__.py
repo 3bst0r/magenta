@@ -22,3 +22,4 @@ from .sequence_example_lib import count_records
 from .sequence_example_lib import flatten_maybe_padded_sequences
 from .sequence_example_lib import get_padded_batch
 from .tf_utils import merge_hparams
+from .my_utils import is_valid_file

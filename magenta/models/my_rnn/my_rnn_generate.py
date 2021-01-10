@@ -1,5 +1,10 @@
+import note_seq
 import numpy as np
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+import matplotlib.pyplot as plt
+import magenta.common.beam_search
+
+from magenta.models.my_rnn.my_simple_rnn_model import BASIC_DEFAULT_MIN_NOTE, BASIC_DEFAULT_MAX_NOTE
 
 
 def one_hot_event(len, index):
@@ -23,6 +28,21 @@ def convert_to_one_hot(predicted_event):
     return result
 
 
+# returns the indices of the hot values in the supplied array
+def convert_to_note_events(one_hot_events):
+    _, result = np.where(one_hot_events == 1.)
+    encoder_decoder = note_seq.MelodyOneHotEncoding(BASIC_DEFAULT_MIN_NOTE, BASIC_DEFAULT_MAX_NOTE)
+    result = np.array([encoder_decoder.decode_event(event) for event in result])
+    return result
+
+
+def melody_seq_to_midi(event_seq, midi_file_path, qpm):
+    note_events = convert_to_note_events(event_seq)
+    output_sequence = note_seq.Melody(note_events).to_sequence(qpm=qpm)
+    note_seq.midi_io.note_sequence_to_midi_file(output_sequence, midi_file_path)
+    print("wrote midi output to {}".format(midi_file_path))
+
+
 """
 Generates melodies step by step. At each step the most likely event is chosen.
 """
@@ -41,21 +61,17 @@ def generate_greedy(seed_seq, model, n):
     model.layers[0].return_sequences = True
     model.layers[1].return_sequences = True
     # first generate prediction for seed sequence one by one
-    seed_seq = seed_seq.reshape((1, seed_seq.shape[0], seed_seq.shape[1]))
-    Y = None
-    for X in seed_seq[0]:
-        X = [[[X]]]
-        Y = model.predict(X)
+    Y = feed_seq(model, seed_seq)
 
     # from here on, we feed predictions back as input
     Y = convert_to_one_hot(Y.flatten())
     yield Y
-    X = [[[Y]]]
+    X = Y.reshape(1, 1, Y.shape[0])
     for i in range(n - 1):
         Y = model.predict(X)
         Y = convert_to_one_hot(Y.flatten())
         yield Y
-        X = [[[Y]]]
+        X = Y.reshape(1, 1, Y.shape[0])
 
 
 def get_lstm_state(model, lstm_layer_indices):
@@ -81,10 +97,11 @@ Feeds the model a seq, simply for setting up the internal state of the network.
 
 
 def feed_seq(model, seq):
-    seq = seq.reshape((1, seq.shape[0], seq.shape[1]))
+    # seq = seq.reshape(seq.shape[0], seq.shape[1])
     Y = None
-    for X in seq[0]:
-        Y = model.predict([[[X]]])
+    for X in seq:
+        X = X.reshape(1, 1, X.shape[0])
+        Y = model.predict(X)
     return Y
 
 
@@ -95,16 +112,47 @@ def predict_from_state(model, X, state, lstm_layer_indices):
     :param model: LSTM model
     :param X: input to model
     :param state: model state
-    :param lstm_layer_indices: hich of the layers in the network are LSTM layers
+    :param lstm_layer_indices: which of the layers in the network are LSTM layers
     :return: (Y, state_new)
     """
     set_lstm_state(model=model, lstm_layer_indices=lstm_layer_indices, lstm_state=state)
     Y = model.predict(X)
     state_new = get_lstm_state(model=model, lstm_layer_indices=lstm_layer_indices)
-    return (Y, state_new)
+    return Y, state_new
 
 
-def generate_beam_search(seed_seq, model, n, b=3, lstm_layer_indices=None):
+def generate_beam_search(seed_seq, model, lstm_layer_indices, n, beam_size=3, branch_factor=3):
+    def generate_step_fn(sequences, states, scores):
+        new_sequences = []
+        new_states = []
+        new_scores = []
+        for i, (sequence, state, score) in enumerate(zip(sequences, states, scores)):
+            X = sequence[-1, :].reshape(1, 1, sequence.shape[1])
+            Y, new_state = predict_from_state(model, X, state,
+                                              lstm_layer_indices)
+            Y = Y.flatten()
+            # add new sequences, states and scores for all predictions
+            for i in range(len(Y)):
+                new_sequence = np.concatenate((sequence, [one_hot_event(len(Y), i)]))
+                new_sequences.append(new_sequence)
+                new_states.append(new_state)
+                new_scores.append(score - np.log(Y[i]))
+        return new_sequences, new_states, new_scores
+
+    feed_seq(model, seed_seq[:-1])
+    initial_state = get_lstm_state(model, lstm_layer_indices)
+
+    best_seq, state, loglik = magenta.common.beam_search(initial_sequence=seed_seq,
+                                                         initial_state=initial_state,
+                                                         generate_step_fn=generate_step_fn,
+                                                         num_steps=n,
+                                                         beam_size=beam_size,
+                                                         branch_factor=branch_factor,
+                                                         steps_per_iteration=1)
+    return best_seq
+
+
+def legacy_generate_beam_search(seed_seq, model, n, b=3, lstm_layer_indices=None):
     """
     Generates sequences using beam search algorithm
     :param seed_seq: the seed sequence
@@ -145,7 +193,7 @@ def generate_beam_search(seed_seq, model, n, b=3, lstm_layer_indices=None):
             # start with the last predicted id
             candidate = candidate_ind[-1]
             X = np_one_hot_event(event_size, candidate)
-            X = [[[X]]]
+            X = X.reshape(1, 1, X.shape[0])
 
             (Y, new_model_state) = predict_from_state(model=model, X=X,
                                                       state=lstm_states[candidate_ind[:-1]],
@@ -164,78 +212,32 @@ def generate_beam_search(seed_seq, model, n, b=3, lstm_layer_indices=None):
         mask = np.argsort(-new_candidate_probs)[:b]
         # create a new dict so the unneeded LSTM states can be collected by gc
         new_lstm_states = dict()
-        # TODO fix this saving lstm states logic: keep only B best ones
-        for c in candidate_inds:
-            new_lstm_states[tuple(c)] = lstm_states[tuple(c)]
+        # TODO fix this saving lstm states logic: keep only b best ones
+        for c in new_candidate_inds:
+            one_before = tuple(c[:-1])
+            new_lstm_states[one_before] = lstm_states[one_before]
         lstm_states = new_lstm_states
-        candidate_inds = np.array(new_candidate_inds, dtype=object)[mask]
-    # TODO return the final melody
-    return list(candidate_inds[0])
+        candidate_inds = (np.array(new_candidate_inds, dtype=object))[mask]
+    return np.array([np_one_hot_event(event_size, index) for index in candidate_inds[0]])
 
 
-def generate_beam_search_broken(seed_seq, model, n, beam_width=3, lstm_layer_indices=None):
-    # model statefulness has to be true so LSTM layers keeps state between predictions. mimics one long sequence,
-    # enables feeding output back into input for variable sequence length generation
-    # batch input shape must be specified
-    # reset state before sequence generation. previous sequence should not influence this sequence
-    # TODO a config should keep track of where LSTM layers are
-    if lstm_layer_indices is None:
-        lstm_layer_indices = [0, 1]
-    for ind in lstm_layer_indices:
-        assert model.layers[ind].stateful
-        model.layers[ind].return_sequences = True
-    model.reset_states()
+def plot_likelihoods_fn(model, event_size):
+    def likelihood_for_events(x, y):
+        z = np.zeros(x.shape)
+        for i, note_event in enumerate(x[0]):
+            X = np_one_hot_event(event_size, note_event)
+            X = X.reshape((1, 1, event_size))
+            z[i] = model.predict(X)
+        return z
 
-    event_size = seed_seq.shape[1]
-
-    # first generate prediction for seed sequence one by one
-    seed_seq = seed_seq.reshape((1, seed_seq.shape[0], seed_seq.shape[1]))
-    Y = None
-    for X in seed_seq[0]:
-        X = [[[X]]]
-        Y = model.predict(X)
-
-    # from here on, we feed predictions back as input
-    # beam search start
-
-    Y = Y.flatten()
-    candidate_inds = -np.argsort(Y)[:beam_width]
-    # which of the beam_width choices will we output for the prev step
-
-    max_probs_predicted_prev = np.empty(0)
-    max_inds_predicted_prev = np.empty(0)
-
-    for i in range(n - 1):
-
-        # save state before trying multiple inputs
-        lstm_state = get_lstm_state(model, lstm_layer_indices)
-        # find most probable for step before
-        prev_max_inds = np.empty(beam_width, dtype=np.int)
-        prev_max_inds.fill(candidate_inds[0])
-        for last_ind in candidate_inds:
-            # input each into the network and calculate joint softmax probability
-            X = [[[np_one_hot_event(event_size, last_ind)]]]
-            Y = model.predict(X)
-            Y = Y.flatten()
-            max_inds_predicted = -np.argsort(Y)[:beam_width]
-            max_probs_predicted = [Y[i] for i in max_inds_predicted]
-            # compare with probs from before by concatenating and sorting
-            max_probs_predicted_prev = np.concatenate((max_probs_predicted, max_probs_predicted_prev))
-            max_inds_predicted_prev = np.concatenate((max_inds_predicted, max_inds_predicted_prev))
-            sort_mask = -np.argsort(max_probs_predicted_prev)[:beam_width]
-            max_probs_predicted_prev = [max_probs_predicted_prev[i] for i in sort_mask]
-            max_inds_predicted_prev = [max_inds_predicted_prev[i] for i in sort_mask]
-            last_inds = np.empty(beam_width, dtype=np.int)
-            last_inds.fill(last_ind)
-            prev_max_inds = np.concatenate((prev_max_inds, last_inds))
-            prev_max_inds = [prev_max_inds[i] for i in sort_mask][:beam_width]
-            # reset state to try out next input
-            set_lstm_state(model, lstm_layer_indices, lstm_state)
-        # the most probable events for the next step are our new candidates
-        candidate_inds = prev_max_inds
-
-        # we now yield the prediction that produced the most probable next step
-        Y = np_one_hot_event(event_size, prev_max_inds[0])
-        yield Y
-        # run it through the LSTM again to set its state up for the next prediction
-        model.predict([[[Y]]])
+    x = np.arange(event_size)
+    y = np.arange(event_size)
+    X, Y = np.meshgrid(x, y)
+    Z = likelihood_for_events(X, Y)
+    fig = plt.figure()
+    ax = plt.axes(projection='3d')
+    ax.plot_surface(X, Y, Z, cmap='BrBG')
+    ax.set_xlabel('x')
+    ax.set_ylabel('y')
+    ax.set_zlabel('z')
+    plt.show()

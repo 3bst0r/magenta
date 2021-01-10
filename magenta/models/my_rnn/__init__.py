@@ -3,4 +3,6 @@ from .my_simple_rnn_model import LOOKBACK_RNN_INPUT_EVENT_DIM
 from .my_simple_rnn_model import get_simple_rnn_model
 from .my_rnn_generate import one_hot_event
 from .my_rnn_generate import generate_greedy
-from .my_rnn_generate import generate_beam_search
+from .my_rnn_generate import legacy_generate_beam_search
+from .my_rnn_generate import plot_likelihoods_fn
+from .my_rnn_generate import melody_seq_to_midi
